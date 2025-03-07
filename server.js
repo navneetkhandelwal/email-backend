@@ -14,7 +14,7 @@ const port = process.env.PORT || 5000;
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../client/build')));
+// app.use(express.static(path.join(__dirname, '../client/build')));
 
 // Set up multer for file uploads
 const upload = multer({
@@ -692,9 +692,9 @@ function sendToClient(email, data) {
 }
 
 // Fallback for all other routes to serve React app
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
-  });
+// app.get('*', (req, res) => {
+//     res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
+//   });
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
