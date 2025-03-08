@@ -491,7 +491,8 @@ async function sendEmail(transporter, row, job) {
 </body>
 </html>
         `
-    } else if (job.userType === "dhananjay") {
+    }
+    else if (job.userType === "dhananjay") {
         emailTemplate = `
          <!DOCTYPE html>
 <html>
@@ -512,7 +513,7 @@ async function sendEmail(transporter, row, job) {
 <p><strong>A bit about my experience:</strong></p>
 
 <ul>
-    <li><strong>Blinkit (SDE-2 | Jan 2024 - Present)</strong></li>
+    <li><strong>Blinkit (SDE-2 | Nov 2023 - Present)</strong></li>
     <ul>
         <li>Part of the Platform team, ensuring scalability, reliability, and observability of microservices for the Catalog team.</li>
         <li>Led several optimizations, including MsgPack & Zstd compression (3.5x Redis bandwidth, 30% lower latency), Django-to-Golang migration (P99 latency cut from 250ms to 15ms), and product sync cron optimization (3 hours to 30 minutes).</li>
