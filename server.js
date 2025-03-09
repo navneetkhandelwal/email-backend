@@ -429,6 +429,7 @@ async function processEmailJob(email) {
     // Clean up
     emailJobs.delete(email);
 }
+}
 
 // Send an individual email
 // Fix the custom email template processing in the sendEmail function
@@ -633,7 +634,7 @@ async function sendEmail(transporter, row, job) {
     };
 
       return await transporter.sendMail(mailOptions);
-  }
+}
 
 // Send updates to connected clients
 function sendToClient(email, data) {
