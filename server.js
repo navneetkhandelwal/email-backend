@@ -52,29 +52,29 @@ app.use(express.json());
 
 // Set up multer for file uploads
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      const uploadDir = path.join(__dirname, 'uploads');
-      if (!fs.existsSync(uploadDir)) {
-        fs.mkdirSync(uploadDir, { recursive: true });
-      }
-      cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-      cb(null, `${Date.now()}_${file.originalname}`);
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => {
+            const uploadDir = path.join(__dirname, 'uploads');
+            if (!fs.existsSync(uploadDir)) {
+                fs.mkdirSync(uploadDir, {recursive: true});
+            }
+            cb(null, uploadDir);
+        },
+        filename: (req, file, cb) => {
+            cb(null, `${Date.now()}_${file.originalname}`);
+        }
+    }),
+    fileFilter: (req, file, cb) => {
+        const filetypes = /csv|xlsx|xls/;
+        const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+        const mimetype = filetypes.test(file.mimetype);
+
+        if (extname && mimetype) {
+            return cb(null, true);
+        } else {
+            cb(new Error('Only CSV, XLSX, and XLS files are allowed!'));
+        }
     }
-  }),
-  fileFilter: (req, file, cb) => {
-    const filetypes = /csv|xlsx|xls/;
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = filetypes.test(file.mimetype);
-    
-    if (extname && mimetype) {
-      return cb(null, true);
-    } else {
-      cb(new Error('Only CSV, XLSX, and XLS files are allowed!'));
-    }
-  }
 });
 
 // Store active SSE connections
@@ -99,16 +99,16 @@ const createTransporter = (email, password) => {
 
 // Handle CSV file processing
 const processCSVFile = (filePath) => {
-  try {
-    const workbook = xlsx.readFile(filePath);
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const data = xlsx.utils.sheet_to_json(worksheet);
-    return data;
-  } catch (error) {
-    console.error('Error processing CSV file:', error);
-    throw new Error('Failed to process CSV file');
-  }
+    try {
+        const workbook = xlsx.readFile(filePath);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const data = xlsx.utils.sheet_to_json(worksheet);
+        return data;
+    } catch (error) {
+        console.error('Error processing CSV file:', error);
+        throw new Error('Failed to process CSV file');
+    }
 };
 
 // API endpoint to receive email data and start the process
@@ -185,41 +185,41 @@ app.post('/api/send-emails', upload.single('file'), async (req, res) => {
 
 // SSE endpoint for real-time progress updates
 app.get('/api/send-emails-sse', (req, res) => {
-  const email = req.query.email;
-  
-  if (!email) {
-    return res.status(400).json({ success: false, message: 'Email parameter is required' });
-  }
-  
-  // Set up SSE
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive'
-  });
-  
-  // Send initial data if job exists
-  const job = emailJobs.get(email);
-  if (job) {
-    const message = JSON.stringify({
-      type: 'progress',
-      total: job.total,
-      current: job.current,
-      success: job.success,
-      failed: job.failed
+    const email = req.query.email;
+
+    if (!email) {
+        return res.status(400).json({success: false, message: 'Email parameter is required'});
+    }
+
+    // Set up SSE
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
     });
-    res.write(`data: ${message}\n\n`);
-  }
-  
-  // Add this client to our active connections
-  const clientId = Date.now();
-  const newClient = { id: clientId, email, res };
-  clients.set(clientId, newClient);
-  
-  // Remove client on connection close
-  req.on('close', () => {
-    clients.delete(clientId);
-  });
+
+    // Send initial data if job exists
+    const job = emailJobs.get(email);
+    if (job) {
+        const message = JSON.stringify({
+            type: 'progress',
+            total: job.total,
+            current: job.current,
+            success: job.success,
+            failed: job.failed
+        });
+        res.write(`data: ${message}\n\n`);
+    }
+
+    // Add this client to our active connections
+    const clientId = Date.now();
+    const newClient = {id: clientId, email, res};
+    clients.set(clientId, newClient);
+
+    // Remove client on connection close
+    req.on('close', () => {
+        clients.delete(clientId);
+    });
 });
 
 app.get('/api/user-profile', async (req, res) => {
@@ -365,42 +365,80 @@ async function processEmailJob(email) {
         message: `${i + 1}/${job.total}: Failed to send email to ${row.Email}: ${error.message}`
       });
     }
-    
-    // Update progress
+
     sendToClient(email, {
-      type: 'progress',
-      total: job.total,
-      current: job.current,
-      success: job.success,
-      failed: job.failed
+        type: 'log',
+        message: `Starting email sending process for ${job.total} recipients`
     });
-    
-    // Wait between emails to avoid triggering spam filters
-    if (i < job.data.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 3000)); // 3-second delay
+
+    // Process each recipient
+    for (let i = 0; i < job.data.length; i++) {
+        const row = job.data[i];
+        job.current = i + 1;
+
+        try {
+            // Skip rows with missing required fields
+            if (!row.Name || !row.Email || !row.Company || !row.Role) {
+                sendToClient(email, {
+                    type: 'log',
+                    message: `Skipping row ${i + 1}: Missing required fields`
+                });
+                job.failed++;
+                continue;
+            }
+
+            // Send the email
+            await sendEmail(transporter, row, job);
+            job.success++;
+
+            sendToClient(email, {
+                type: 'log',
+                message: `${i + 1}/${job.total}: Successfully sent email to ${row.Email}`
+            });
+
+        } catch (error) {
+            job.failed++;
+            sendToClient(email, {
+                type: 'log',
+                message: `${i + 1}/${job.total}: Failed to send email to ${row.Email}: ${error.message}`
+            });
+        }
+
+        // Update progress
+        sendToClient(email, {
+            type: 'progress',
+            total: job.total,
+            current: job.current,
+            success: job.success,
+            failed: job.failed
+        });
+
+        // Wait between emails to avoid triggering spam filters
+        if (i < job.data.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 3000)); // 3-second delay
+        }
     }
-  }
-  
-  // Complete the job
-  sendToClient(email, {
-    type: 'complete',
-    success: job.success,
-    failed: job.failed
-  });
-  
-  // Clean up
-  emailJobs.delete(email);
+
+    // Complete the job
+    sendToClient(email, {
+        type: 'complete',
+        success: job.success,
+        failed: job.failed
+    });
+
+    // Clean up
+    emailJobs.delete(email);
 }
 
 // Send an individual email
 // Fix the custom email template processing in the sendEmail function
 
 async function sendEmail(transporter, row, job) {
-    const { Name, Company, Email, Role, Link } = row;
-    
+    const {Name, Company, Email, Role, Link} = row;
+
     const nameParts = Name.split(' ');
     const firstName = nameParts[0];
-    
+
     // Determine which email template to use
     let emailTemplate = await getEmailTemplate(job.userType);
     
@@ -541,12 +579,12 @@ async function sendEmail(transporter, row, job) {
           }
         </style>
       `;
-      
-      // Ensure the custom template includes <body> tags
-      const customBody = job.customEmailBody.trim();
-      
-      // Create the full HTML email with styles
-      emailTemplate = `
+
+        // Ensure the custom template includes <body> tags
+        const customBody = job.customEmailBody.trim();
+
+        // Create the full HTML email with styles
+        emailTemplate = `
         <!DOCTYPE html>
         <html>
         <head>
@@ -599,21 +637,21 @@ async function sendEmail(transporter, row, job) {
 
 // Send updates to connected clients
 function sendToClient(email, data) {
-  clients.forEach(client => {
-    if (client.email === email) {
-      client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+    clients.forEach(client => {
+        if (client.email === email) {
+            client.res.write(`data: ${JSON.stringify(data)}\n\n`);
+        }
+    });
+
+    // Also update the job status if it's a progress update
+    if (data.type === 'progress') {
+        const job = emailJobs.get(email);
+        if (job) {
+            job.current = data.current;
+            job.success = data.success;
+            job.failed = data.failed;
+        }
     }
-  });
-  
-  // Also update the job status if it's a progress update
-  if (data.type === 'progress') {
-    const job = emailJobs.get(email);
-    if (job) {
-      job.current = data.current;
-      job.success = data.success;
-      job.failed = data.failed;
-    }
-  }
 }
 
 // Function to fetch email template by userType
@@ -639,5 +677,5 @@ async function getEmailTemplate (userType) {
 //   });
 
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+    console.log(`Server running on port ${port}`);
 });
