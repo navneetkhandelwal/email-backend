@@ -10,7 +10,7 @@ const { v4: uuidv4 } = require('uuid');
 const mongoose = require('mongoose');
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://emailAdmin:emailPassword@cluster0.9ar1b.mongodb.net/email_script_db?retryWrites=true&w=majority&appName=Cluster0';
+const MONGODB_URI = 'mongodb+srv://emailAdmin:emailPassword@cluster0.9ar1b.mongodb.net/email_script_db?retryWrites=true&w=majority&appName=Cluster0';
 
   mongoose.connect(MONGODB_URI)
   .then(() => console.log("Connected to DB:", mongoose.connection.name)) // Check database name
