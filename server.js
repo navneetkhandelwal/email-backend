@@ -28,7 +28,7 @@ const userTemplate = new mongoose.Schema({
 });
 
 const emailAuditRecords = new mongoose.Schema({
-  jobId: {type: String, required: true},
+  jobId: { type: String, required: true },
   userProfile: { type: String, required: true },
   name: { type: String, required: true },
   company: { type: String, required: true },
@@ -36,7 +36,7 @@ const emailAuditRecords = new mongoose.Schema({
   role: { type: String, required: true },
   link: { type: String, required: false },
   status: { type: String, required: true }
-});
+}, { timestamps: true }); // Adds createdAt and updatedAt fields automatically
 
 const UserProfile = mongoose.model('user_profiles', userProfile);
 const EmailAudit = mongoose.model('email_audits', emailAuditRecords);
@@ -158,8 +158,6 @@ app.post('/api/send-emails', upload.single('file'), async (req, res) => {
       success: 0,
       failed: 0
     });
-
-    console.log("Email Jobs-> " +  JSON.stringify(emailJobs, null, 2));
     
     // Start processing in the background
     setTimeout(() => {
@@ -241,7 +239,7 @@ app.get('/api/user-profile', async (req, res) => {
 
 app.get('/api/email-audit', async (req, res) => {
   try {
-  const records = await EmailAudit.find();
+    const records = await EmailAudit.find().sort({ createdAt: -1 });
 
   res.status(200).json({ 
     success: true, 
@@ -260,7 +258,6 @@ app.get('/api/email-audit', async (req, res) => {
 async function processEmailJob(email) {
   const job = emailJobs.get(email);
 
-  console.log("Job-> " +  JSON.stringify(job, null, 2));
   if (!job) return;
   
   job.status = 'processing';
@@ -364,59 +361,6 @@ async function processEmailJob(email) {
         type: 'log',
         message: `${i + 1}/${job.total}: Failed to send email to ${row.Email}: ${error.message}`
       });
-    }
-
-    sendToClient(email, {
-        type: 'log',
-        message: `Starting email sending process for ${job.total} recipients`
-    });
-
-    // Process each recipient
-    for (let i = 0; i < job.data.length; i++) {
-        const row = job.data[i];
-        job.current = i + 1;
-
-        try {
-            // Skip rows with missing required fields
-            if (!row.Name || !row.Email || !row.Company || !row.Role) {
-                sendToClient(email, {
-                    type: 'log',
-                    message: `Skipping row ${i + 1}: Missing required fields`
-                });
-                job.failed++;
-                continue;
-            }
-
-            // Send the email
-            await sendEmail(transporter, row, job);
-            job.success++;
-
-            sendToClient(email, {
-                type: 'log',
-                message: `${i + 1}/${job.total}: Successfully sent email to ${row.Email}`
-            });
-
-        } catch (error) {
-            job.failed++;
-            sendToClient(email, {
-                type: 'log',
-                message: `${i + 1}/${job.total}: Failed to send email to ${row.Email}: ${error.message}`
-            });
-        }
-
-        // Update progress
-        sendToClient(email, {
-            type: 'progress',
-            total: job.total,
-            current: job.current,
-            success: job.success,
-            failed: job.failed
-        });
-
-        // Wait between emails to avoid triggering spam filters
-        if (i < job.data.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 3000)); // 3-second delay
-        }
     }
 
     // Complete the job
