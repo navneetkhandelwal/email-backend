@@ -564,7 +564,9 @@ async function sendEmail(transporter, row, job) {
       divyam: "Divyam Shrivastava",
       dhananjay: "Dhananjay Sharma",
       akash: "Akash Thakur",
-      avi: "Avi Kapoor"
+      avi: "Avi Kapoor",
+      komal: "Komal Shrivastava",
+      pooja: "Pooja Sharma"
     };
     
     // Get the value from the map, or use the default if not found
