@@ -35,7 +35,8 @@ const emailAuditRecords = new mongoose.Schema({
   email: { type: String, required: true },
   role: { type: String, required: true },
   link: { type: String, required: false },
-  status: { type: String, required: true }
+  status: { type: String, required: true },
+  errorDetails: { type: String, required: false }
 }, { timestamps: true }); // Adds createdAt and updatedAt fields automatically
 
 const UserProfile = mongoose.model('user_profiles', userProfile);
@@ -254,6 +255,47 @@ app.get('/api/email-audit', async (req, res) => {
 }
 });
 
+// Add this new endpoint before app.listen
+app.delete('/api/email-audit/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('Received delete request for ID:', id);
+    
+    // Validate if the ID is a valid MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      console.log('Invalid MongoDB ObjectId format:', id);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid record ID format' 
+      });
+    }
+
+    console.log('Attempting to delete record with ID:', id);
+    const result = await EmailAudit.findByIdAndDelete(id);
+    console.log('Delete result:', result);
+    
+    if (!result) {
+      console.log('No record found with ID:', id);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Record not found' 
+      });
+    }
+    
+    console.log('Successfully deleted record with ID:', id);
+    res.status(200).json({ 
+      success: true, 
+      message: 'Record deleted successfully' 
+    });
+  } catch (error) {
+    console.error('Error deleting email audit record:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error while deleting record' 
+    });
+  }
+});
+
 // Process email job
 async function processEmailJob(email) {
   const job = emailJobs.get(email);
@@ -267,6 +309,12 @@ async function processEmailJob(email) {
   try {
     transporter = createTransporter(job.email, job.password);
   } catch (error) {
+    console.error('❌ Error creating email transporter:', {
+      error: error.message,
+      stack: error.stack,
+      email: job.email
+    });
+    
     sendToClient(email, {
       type: 'log',
       message: `Error creating email transporter: ${error.message}`
@@ -282,6 +330,12 @@ async function processEmailJob(email) {
     return;
   }
   
+  console.log('📧 Starting email job:', {
+    jobId: job.jobId,
+    totalEmails: job.total,
+    userType: job.userType
+  });
+  
   sendToClient(email, {
     type: 'log',
     message: `Starting email sending process for ${job.total} recipients`
@@ -295,23 +349,33 @@ async function processEmailJob(email) {
     try {
       // Skip rows with missing required fields
       if (!row.Name || !row.Email || !row.Company || !row.Role) {
+        console.warn('⚠️ Skipping invalid row:', {
+          rowIndex: i + 1,
+          missingFields: {
+            name: !row.Name,
+            email: !row.Email,
+            company: !row.Company,
+            role: !row.Role
+          }
+        });
+
         sendToClient(email, {
           type: 'log',
           message: `Skipping row ${i + 1}: Missing required fields`
         });
 
-        console.log("Validation Error of Job");
         job.failed++;
 
         const newJob = new EmailAudit({
           jobId: job.jobId,        
           userProfile: job.userType,  
-          name: job.data[i].Name,    
-          company: job.data[i].Company,
-          email: job.data[i].Email,
-          role: job.data[i].Role,
-          link: job.data[i].Link,
-          status: "failure"   
+          name: row.Name || 'Missing',    
+          company: row.Company || 'Missing',
+          email: row.Email || 'Missing',
+          role: row.Role || 'Missing',
+          link: row.Link,
+          status: "failure",
+          errorDetails: "Missing required fields"   
         });
         await newJob.save(); 
 
@@ -322,16 +386,20 @@ async function processEmailJob(email) {
       await sendEmail(transporter, row, job);
       job.success++;
 
-      console.log("Success of Job");
-      //add to audit
+      console.log('✅ Email sent successfully:', {
+        jobId: job.jobId,
+        recipient: row.Email,
+        progress: `${i + 1}/${job.total}`
+      });
+
       const newJob = new EmailAudit({
         jobId: job.jobId,        
         userProfile: job.userType,  
-        name: job.data[i].Name,    
-        company: job.data[i].Company,
-        email: job.data[i].Email,
-        role: job.data[i].Role,
-        link: job.data[i].Link,
+        name: row.Name,    
+        company: row.Company,
+        email: row.Email,
+        role: row.Role,
+        link: row.Link,
         status: "success"   
       });
       await newJob.save(); 
@@ -344,16 +412,24 @@ async function processEmailJob(email) {
     } catch (error) {
       job.failed++;
 
-      console.log("Unexpected Error of Job");
+      console.error('❌ Failed to send email:', {
+        jobId: job.jobId,
+        recipient: row.Email,
+        error: error.message,
+        stack: error.stack,
+        progress: `${i + 1}/${job.total}`
+      });
+
       const newJob = new EmailAudit({
         jobId: job.jobId,        
         userProfile: job.userType,  
-        name: job.data[i].Name,    
-        company: job.data[i].Company,
-        email: job.data[i].Email,
-        role: job.data[i].Role,
-        link: job.data[i].Link,
-        status: "failure"   
+        name: row.Name,    
+        company: row.Company,
+        email: row.Email,
+        role: row.Role,
+        link: row.Link,
+        status: "failure",
+        errorDetails: error.message   
       });
       await newJob.save(); 
 
@@ -362,224 +438,106 @@ async function processEmailJob(email) {
         message: `${i + 1}/${job.total}: Failed to send email to ${row.Email}: ${error.message}`
       });
     }
+  }
 
-    // Complete the job
-    sendToClient(email, {
-        type: 'complete',
-        success: job.success,
-        failed: job.failed
-    });
+  console.log('✨ Email job completed:', {
+    jobId: job.jobId,
+    totalEmails: job.total,
+    success: job.success,
+    failed: job.failed
+  });
 
-    // Clean up
-    emailJobs.delete(email);
-}
+  // Complete the job
+  sendToClient(email, {
+      type: 'complete',
+      success: job.success,
+      failed: job.failed
+  });
+
+  // Clean up
+  emailJobs.delete(email);
 }
 
 // Send an individual email
 // Fix the custom email template processing in the sendEmail function
 
 async function sendEmail(transporter, row, job) {
-    const {Name, Company, Email, Role, Link} = row;
+    try {
+        const {Name, Company, Email, Role, Link} = row;
 
-    const nameParts = Name.split(' ');
-    const firstName = nameParts[0];
+        console.log('🔄 Processing email for:', {
+            recipient: Email,
+            userType: job.userType
+        });
 
-    // Determine which email template to use
-    let emailTemplate = await getEmailTemplate(job.userType);
-    
+        const nameParts = Name.split(' ');
+        const firstName = nameParts[0];
 
-    if (job.userType === 'other') {
-      // Use the custom template provided by the user
-      if (!job.customEmailBody) {
-        throw new Error('No custom email template provided');
-      }
-      
-      // Get the styling for the email
-      const emailStyles = `
-        <style>
-          body, p, div, a {
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            color: #2c3e50;
-            margin: 0;
-            padding: 0;
-          }
-          
-          .container {
-            max-width: 600px;
-            padding: 20px;
-          }
-  
-          .greeting {
-            margin: 0;
-          }
-          
-          .highlight {
-            color: #2c3e50;
-            font-weight: bold;
-          }
-          
-          .experience {
-            margin: 15px 0;
-            padding: 15px;
-            background: #f9f9f9;
-            border-radius: 4px;
-          }
-          
-          .tech-skills {
-            display: inline-block;
-            background: #f0f0f0;
-            padding: 3px 8px;
-            margin: 2px;
-            border-radius: 3px;
-            font-size: 13px;
-            color: #2c3e50;
-          }
-          
-          .links {
-            margin: 20px 0;
-            text-align: left;
-          }
-          
-          .link-button {
-            display: inline-block;
-            margin: 5px 12px 5px 0;
-            padding: 10px 20px;
-            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
-            color: white !important;
-            text-decoration: none;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 500;
-            letter-spacing: 0.3px;
-            border: 2px solid transparent;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            transition: all 0.3s ease;
-          }
-          
-          .link-button:hover {
-            background: linear-gradient(135deg, #3498db 0%, #2c3e50 100%);
-            transform: translateY(-1px);
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
-          }
-          
-          .link-button:active {
-            transform: translateY(1px);
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-          }
-  
-          .link-button.resume {
-            background: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);
-          }
-          
-          .link-button.resume:hover {
-            background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
-          }
-  
-          .link-button.linkedin {
-            background: linear-gradient(135deg, #0077B5 0%, #00A0DC 100%);
-          }
-          
-          .link-button.linkedin:hover {
-            background: linear-gradient(135deg, #00A0DC 0%, #0077B5 100%);
-          }
-  
-          .link-button.job {
-            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
-          }
-          
-          .link-button.job:hover {
-            background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%);
-          }
-          
-          hr {
-            border: none;
-            border-top: 1px solid #eee;
-            margin: 20px 0;
-          }
-          
-          ul {
-            padding-left: 20px;
-            margin: 10px 0;
-          }
-          
-          li {
-            margin: 8px 0;
-          }
-          
-          p {
-            margin: 15px 0;
-          }
-          
-          @media only screen and (max-width: 600px) {
-            .container {
-              width: 100% !important;
-              padding: 10px !important;
+        // Determine which email template to use
+        let emailTemplate = await getEmailTemplate(job.userType);
+        
+        if (!emailTemplate) {
+            throw new Error(`Email template not found for user type: ${job.userType}`);
+        }
+
+        if (job.userType === 'other') {
+            if (!job.customEmailBody) {
+                throw new Error('No custom email template provided');
             }
-            
-            .link-button {
-              display: inline-block;
-              margin: 5px 10px 5px 0;
-            }
-          }
-        </style>
-      `;
+            // ... existing code for custom template ...
+        }
 
-        // Ensure the custom template includes <body> tags
-        const customBody = job.customEmailBody.trim();
+        // Process conditional Link statement properly
+        const linkRegex = /\$\{Link \? `(.*?)` : ''\}/g;
+        emailTemplate = emailTemplate.replace(linkRegex, (match, content) => {
+            return Link ? content : '';
+        });
+        
+        // Replace regular template variables
+        emailTemplate = emailTemplate
+            .replace(/\$\{firstName\}/g, firstName)
+            .replace(/\$\{Name\}/g, Name)
+            .replace(/\$\{Company\}/g, Company)
+            .replace(/\$\{Email\}/g, Email)
+            .replace(/\$\{Role\}/g, Role)
+            .replace(/\$\{Link\}/g, Link || '');
 
-        // Create the full HTML email with styles
-        emailTemplate = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          ${emailStyles}
-        </head>
-        ${customBody}
-        </html>
-      `;
-      
+        const nameMap = {
+            navneet: "Navneet Khandelwal",
+            teghdeep: "Teghdeep Kapoor",
+            divyam: "Divyam Shrivastava",
+            dhananjay: "Dhananjay Sharma",
+            akash: "Akash Thakur",
+            avi: "Avi Kapoor",
+            komal: "Komal Shrivastava",
+            pooja: "Pooja Sharma"
+        };
+        
+        const from = nameMap[job.userType] || "Interview Opportunity Needed";
+        
+        const mailOptions = {
+            from: `${from} <${job.email}>`,
+            to: Email,
+            subject: `Request for an Interview Opportunity - ${Role} at ${Company}`,
+            html: emailTemplate
+        };
+
+        console.log('📤 Sending email:', {
+            from: mailOptions.from,
+            to: mailOptions.to,
+            subject: mailOptions.subject
+        });
+
+        return await transporter.sendMail(mailOptions);
+    } catch (error) {
+        console.error('❌ Error in sendEmail function:', {
+            error: error.message,
+            stack: error.stack,
+            recipient: row.Email,
+            userType: job.userType
+        });
+        throw error; // Re-throw to be handled by the caller
     }
-
-    // Process conditional Link statement properly
-    const linkRegex = /\$\{Link \? `(.*?)` : ''\}/g;
-    emailTemplate = emailTemplate.replace(linkRegex, (match, content) => {
-      return Link ? content : '';
-    });
-    
-    // Replace regular template variables
-    emailTemplate = emailTemplate
-      .replace(/\$\{firstName\}/g, firstName)
-      .replace(/\$\{Name\}/g, Name)
-      .replace(/\$\{Company\}/g, Company)
-      .replace(/\$\{Email\}/g, Email)
-      .replace(/\$\{Role\}/g, Role)
-      .replace(/\$\{Link\}/g, Link || '');
-
-    const nameMap = {
-      navneet: "Navneet Khandelwal",
-      teghdeep: "Teghdeep Kapoor",
-      divyam: "Divyam Shrivastava",
-      dhananjay: "Dhananjay Sharma",
-      akash: "Akash Thakur",
-      avi: "Avi Kapoor",
-      komal: "Komal Shrivastava",
-      pooja: "Pooja Sharma"
-    };
-    
-    // Get the value from the map, or use the default if not found
-    const from = nameMap[job.userType] || "Interview Opportunity Needed";
-    
-    const mailOptions = {
-      from: `${from} <${job.email}>`,
-      to: Email,
-      subject: `Request for an Interview Opportunity - ${Role} at ${Company}`,
-      html: emailTemplate
-    };
-
-      return await transporter.sendMail(mailOptions);
 }
 
 // Send updates to connected clients
