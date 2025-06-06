@@ -296,6 +296,124 @@ app.delete('/api/email-audit/:id', async (req, res) => {
   }
 });
 
+// Add new endpoint to update resume link in template
+app.post('/api/update-resume-link', async (req, res) => {
+  try {
+    const { userType, resumeLink } = req.body;
+    
+    if (!userType || !resumeLink) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User type and resume link are required' 
+      });
+    }
+
+    // Get the current template
+    const template = await UserTemplate.findOne({ userProfile: userType });
+    
+    if (!template) {
+      return res.status(404).json({ 
+        success: false, 
+        message: `No template found for user type: ${userType}` 
+      });
+    }
+
+    // Replace the old resume link with the new one
+    const oldTemplate = template.userTemplate;
+    console.log('Updating resume link to:', resumeLink);
+    
+    // First try to find the existing link
+    const linkMatch = oldTemplate.match(/href=["'](https:\/\/drive\.google\.com\/file\/d\/[a-zA-Z0-9_-]+\/view)["']/i);
+    console.log('Found existing link:', linkMatch);
+    
+    let newTemplate;
+    if (linkMatch) {
+      // If found in href, replace it there
+      const newLink = resumeLink.startsWith('@') ? resumeLink.substring(1) : resumeLink;
+      newTemplate = oldTemplate.replace(
+        /href=["']https:\/\/drive\.google\.com\/file\/d\/[a-zA-Z0-9_-]+\/view["']/i,
+        `href="${newLink}"`
+      );
+    } else {
+      // If not found in href, try the old pattern
+      newTemplate = oldTemplate.replace(
+        /@https:\/\/drive\.google\.com\/[^\s"'<>]+/g,
+        resumeLink
+      );
+    }
+    
+    console.log('Template updated successfully');
+
+    // Update the template
+    template.userTemplate = newTemplate;
+    await template.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Resume link updated successfully',
+      template: newTemplate
+    });
+
+  } catch (error) {
+    console.error('Error updating resume link:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error updating resume link' 
+    });
+  }
+});
+
+// Add new endpoint to get resume link from template
+app.get('/api/get-resume-link/:userType', async (req, res) => {
+  try {
+    const { userType } = req.params;
+    
+    if (!userType) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User type is required' 
+      });
+    }
+
+    // Get the current template
+    const template = await UserTemplate.findOne({ userProfile: userType });
+    
+    if (!template) {
+      console.log(`No template found for userType: ${userType}`);
+      return res.status(404).json({ 
+        success: false, 
+        message: `No template found for user type: ${userType}` 
+      });
+    }
+
+    // Log the full template for debugging
+    console.log('Full template content:', template.userTemplate);
+
+    // Extract the Google Drive file ID and construct the full link
+    const fileIdMatch = template.userTemplate.match(/file\/d\/([a-zA-Z0-9_-]+)\/view/i);
+    console.log('File ID match:', fileIdMatch);
+    
+    let resumeLink = '';
+    if (fileIdMatch && fileIdMatch[1]) {
+      const fileId = fileIdMatch[1];
+      resumeLink = `@https://drive.google.com/file/d/${fileId}/view`;
+    }
+    console.log('Final resume link:', resumeLink);
+
+    res.status(200).json({ 
+      success: true, 
+      resumeLink
+    });
+
+  } catch (error) {
+    console.error('Error fetching resume link:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error fetching resume link' 
+    });
+  }
+});
+
 // Process email job
 async function processEmailJob(email) {
   const job = emailJobs.get(email);
