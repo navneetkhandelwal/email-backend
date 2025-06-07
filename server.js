@@ -27,7 +27,13 @@ const userTemplate = new mongoose.Schema({
   userTemplate: { type: String, required: true }
 });
 
-const emailAuditRecords = new mongoose.Schema({
+const followUpTemplate = new mongoose.Schema({
+  userProfile: { type: String, required: true },
+  followUpTemplate: { type: String, required: true },
+  lastUpdated: { type: Date, default: Date.now }
+});
+
+const emailAuditSchema = new mongoose.Schema({
   jobId: { type: String, required: true },
   userProfile: { type: String, required: true },
   name: { type: String, required: true },
@@ -36,15 +42,37 @@ const emailAuditRecords = new mongoose.Schema({
   role: { type: String, required: true },
   link: { type: String, required: false },
   status: { type: String, required: true },
-  errorDetails: { type: String, required: false }
+  errorDetails: { type: String, required: false },
+  replyReceived: { type: Boolean, default: false },
+  lastFollowUpDate: { type: Date },
+  followUpCount: { type: Number, default: 0 },
+  messageId: { type: String, required: true },
+  threadId: { type: String, required: true },
+  isFollowUp: { type: Boolean, default: false },
+  originalMessageId: { type: String },
+  emailType: { type: String, required: true }
 }, { timestamps: true }); // Adds createdAt and updatedAt fields automatically
 
 const UserProfile = mongoose.model('user_profiles', userProfile);
-const EmailAudit = mongoose.model('email_audits', emailAuditRecords);
+const EmailAudit = mongoose.model('email_audits', emailAuditSchema);
 const UserTemplate = mongoose.model('user_templates', userTemplate);
+const FollowUpTemplate = mongoose.model('followup_templates', followUpTemplate);
 
 const app = express();
 const port = process.env.PORT || 5001;
+
+// Name mapping for email senders
+const nameMap = {
+  'navneet': 'Navneet Khandelwal',
+  'teghdeep': 'Teghdeep Singh',
+  'divyam': 'Divyam Bhardwaj',
+  'dhananjay': 'Dhananjay Chauhan',
+  'akash': 'Akash Sharma',
+  'avi': 'Avi Arora',
+  'komal': 'Komal Sharma',
+  'pooja': 'Pooja Verma',
+  'other': 'Interview Opportunity'
+};
 
 // Middleware
 app.use(cors());
@@ -84,19 +112,52 @@ const clients = new Map();
 // Email sending queue and process management
 const emailJobs = new Map();
 
-// Utility to create a nodemailer transporter
-const createTransporter = (email, password) => {
-  return nodemailer.createTransport({
-    pool: true,
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    auth: {
-      user: email,
-      pass: password
-    } 
+// Add this helper function for email transport
+function createTransporter(email, password) {
+  console.log('Creating email transporter with:', {
+    email,
+    usingAppPassword: password.length === 16 // App passwords are 16 characters
   });
-};
+
+  try {
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: {
+        user: email,
+        pass: password // This should be an App Password
+      },
+      debug: true, // Enable debug logs
+      logger: true  // Enable built-in logger
+    });
+
+    // Verify the connection configuration
+    transporter.verify(function(error, success) {
+      if (error) {
+        console.error('Transporter verification failed:', {
+          error: error.message,
+          code: error.code,
+          response: error.response,
+          stack: error.stack
+        });
+      } else {
+        console.log('Server is ready to take our messages');
+      }
+    });
+
+    return transporter;
+  } catch (error) {
+    console.error('Error creating transporter:', {
+      error: error.message,
+      code: error.code,
+      response: error.response,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
 
 // Handle CSV file processing
 const processCSVFile = (filePath) => {
@@ -241,18 +302,28 @@ app.get('/api/user-profile', async (req, res) => {
 app.get('/api/email-audit', async (req, res) => {
   try {
     const records = await EmailAudit.find().sort({ createdAt: -1 });
+    
+    const formattedRecords = records.map(record => ({
+      ...record.toObject(),
+      emailMetadata: {
+        messageId: record.messageId,
+        threadId: record.threadId,
+        originalMessageId: record.originalMessageId,
+        isFollowUp: record.isFollowUp
+      }
+    }));
 
-  res.status(200).json({ 
-    success: true, 
-    records
-  });
-} catch (error) {
-  console.error('Error fetching email audit:', error);
-  res.status(500).json({ 
-    success: false, 
-    message: error.message || 'Server error processing request' 
-  });
-}
+    res.status(200).json({ 
+      success: true, 
+      records: formattedRecords
+    });
+  } catch (error) {
+    console.error('Error fetching email audit:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error processing request' 
+    });
+  }
 });
 
 // Add this new endpoint before app.listen
@@ -492,6 +563,458 @@ app.post('/api/update-template', async (req, res) => {
   }
 });
 
+// Add endpoint to get follow-up template
+app.get('/api/get-followup-template/:userType', async (req, res) => {
+  try {
+    const { userType } = req.params;
+    
+    if (!userType) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User type is required' 
+      });
+    }
+
+    const template = await FollowUpTemplate.findOne({ userProfile: userType });
+    
+    res.status(200).json({ 
+      success: true, 
+      followUpTemplate: template ? template.followUpTemplate : null
+    });
+
+  } catch (error) {
+    console.error('Error fetching follow-up template:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error fetching follow-up template' 
+    });
+  }
+});
+
+// Add endpoint to update follow-up template
+app.post('/api/update-followup-template', async (req, res) => {
+  try {
+    const { userType, template } = req.body;
+    
+    if (!userType || !template) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User type and template are required' 
+      });
+    }
+
+    let followUpTemplate = await FollowUpTemplate.findOne({ userProfile: userType });
+    
+    if (!followUpTemplate) {
+      followUpTemplate = new FollowUpTemplate({
+        userProfile: userType,
+        followUpTemplate: template
+      });
+    } else {
+      followUpTemplate.followUpTemplate = template;
+    }
+
+    await followUpTemplate.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Follow-up template updated successfully',
+      template: followUpTemplate.followUpTemplate
+    });
+
+  } catch (error) {
+    console.error('Error updating follow-up template:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error updating follow-up template' 
+    });
+  }
+});
+
+// Add endpoint to toggle reply received status
+app.post('/api/toggle-reply-received/:recordId', async (req, res) => {
+  try {
+    const { recordId } = req.params;
+    
+    if (!recordId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Record ID is required' 
+      });
+    }
+
+    const record = await EmailAudit.findById(recordId);
+    
+    if (!record) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Record not found' 
+      });
+    }
+
+    record.replyReceived = !record.replyReceived;
+    await record.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Reply received status updated successfully',
+      replyReceived: record.replyReceived
+    });
+
+  } catch (error) {
+    console.error('Error updating reply received status:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error updating reply received status' 
+    });
+  }
+});
+
+// Update the send follow-up endpoint with better error handling
+app.post('/api/send-followup', async (req, res) => {
+  try {
+    const { recordId, userType, email, password } = req.body;
+    
+    const record = await EmailAudit.findById(recordId);
+    if (!record) {
+      return res.status(404).json({ success: false, message: 'Record not found' });
+    }
+
+    // Prevent follow-ups on follow-up emails
+    if (record.isFollowUp) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Cannot send follow-up to a follow-up email' 
+      });
+    }
+
+    const template = await FollowUpTemplate.findOne({ userProfile: userType });
+    if (!template) {
+      return res.status(404).json({ success: false, message: 'Follow-up template not found' });
+    }
+
+    const transporter = createTransporter(email, password);
+    
+    // Generate a new Message-ID for the follow-up that references the original
+    const domain = email.split('@')[1];
+    const newMessageId = `<followup.${Date.now()}.${record.jobId}@${domain}>`;
+
+    const mailOptions = {
+      from: `${nameMap[userType]} <${email}>`,
+      to: record.email,
+      subject: `Re: Request for an Interview Opportunity - ${record.role} at ${record.company}`,
+      html: template.followUpTemplate,
+      inReplyTo: record.messageId,
+      references: record.threadId,
+      messageId: newMessageId,
+      headers: {
+        'Message-ID': newMessageId,
+        'In-Reply-To': record.messageId,
+        'References': record.threadId,
+        'X-Entity-Ref-ID': recordId,
+        'X-Follow-Up': 'true',
+        'Thread-Topic': `Interview Opportunity - ${record.role} at ${record.company}`,
+        'Thread-Index': `${record.jobId}-${Date.now()}`,
+        'X-Priority': '1',
+        'X-MSMail-Priority': 'High',
+        'Importance': 'high'
+      }
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+
+    // Create a new audit record for the follow-up
+    const followUpRecord = new EmailAudit({
+      jobId: `followup_${record.jobId}`,
+      userProfile: userType,
+      name: record.name,
+      company: record.company,
+      email: record.email,
+      role: record.role,
+      link: record.link,
+      status: 'success',
+      messageId: newMessageId,
+      threadId: record.threadId,
+      isFollowUp: true,
+      originalMessageId: record.messageId,
+      emailType: 'Follow-up Email'
+    });
+
+    await followUpRecord.save();
+
+    // Update the original record's follow-up count and date
+    record.followUpCount = (record.followUpCount || 0) + 1;
+    record.lastFollowUpDate = new Date();
+    await record.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Follow-up email sent successfully',
+      info: info
+    });
+
+  } catch (error) {
+    console.error('Error sending follow-up:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error sending follow-up' 
+    });
+  }
+});
+
+// Add endpoint to send bulk follow-ups
+app.post('/api/send-bulk-followup', async (req, res) => {
+  try {
+    const { email, password, userType, startDate, endDate } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: 'Email credentials are required' });
+    }
+
+    if (!userType) {
+      return res.status(400).json({ success: false, message: 'User profile is required' });
+    }
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ success: false, message: 'Date range is required' });
+    }
+
+    // Find eligible records
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999); // Set to end of day
+
+    const records = await EmailAudit.find({
+      userProfile: userType,
+      replyReceived: false,
+      emailType: { $ne: 'Follow-up Email' },
+      createdAt: { $gte: start, $lte: end },
+      threadId: { $exists: true },
+      messageId: { $exists: true }
+    });
+
+    if (!records || records.length === 0) {
+      return res.status(400).json({ success: false, message: 'No eligible emails found for follow-up in the selected date range' });
+    }
+
+    console.log('Found eligible records:', records.length);
+
+    // Create a unique job ID for this bulk follow-up
+    const jobId = uuidv4();
+
+    // Initialize job tracking
+    emailJobs.set(email, {
+      jobId,
+      total: records.length,
+      current: 0,
+      success: 0,
+      failed: 0,
+      email,
+      userType,
+      data: records
+    });
+
+    // Send initial progress
+    sendToClient(email, {
+      type: 'progress',
+      total: records.length,
+      current: 0,
+      success: 0,
+      failed: 0
+    });
+
+    // Create transporter first to validate credentials
+    const transporter = createTransporter(email, password);
+    
+    // Log transporter creation
+    console.log('Created transporter for:', {
+      email,
+      userType,
+      recordCount: records.length
+    });
+
+    // Return success response immediately to start background processing
+    res.status(200).json({ 
+      success: true, 
+      message: 'Started sending follow-up emails',
+      jobId
+    });
+
+          // Process records in the background
+    try {
+      const template = await FollowUpTemplate.findOne({ userProfile: userType });
+      if (!template) {
+        sendToClient(email, {
+          type: 'log',
+          message: `❌ No template found for user ${userType}`
+        });
+        return;
+      }
+
+      console.log('Starting bulk follow-up with template:', {
+        userType,
+        templateExists: !!template,
+        recordCount: records.length
+      });
+
+      for (const record of records) {
+        try {
+          console.log('Processing record:', {
+            email: record.email,
+            company: record.company,
+            role: record.role,
+            threadId: record.threadId,
+            messageId: record.messageId
+          });
+          // Generate a new Message-ID for the follow-up
+          const domain = email.split('@')[1];
+          const newMessageId = `<followup-bulk.${Date.now()}.${record.jobId}@${domain}>`;
+
+          const mailOptions = {
+            from: `${nameMap[userType]} <${email}>`,
+            to: record.email,
+            subject: `Re: Request for an Interview Opportunity - ${record.role} at ${record.company}`,
+            html: template.followUpTemplate,
+            inReplyTo: record.messageId,
+            references: record.threadId,
+            messageId: newMessageId,
+            headers: {
+              'Message-ID': newMessageId,
+              'In-Reply-To': record.messageId,
+              'References': record.threadId,
+              'X-Entity-Ref-ID': record._id,
+              'X-Follow-Up': 'true',
+              'Thread-Topic': `Interview Opportunity - ${record.role} at ${record.company}`,
+              'Thread-Index': `${record.jobId}-${Date.now()}`,
+              'X-Priority': '1',
+              'X-MSMail-Priority': 'High',
+              'Importance': 'high'
+            }
+          };
+
+          await transporter.sendMail(mailOptions);
+
+          // Create a new audit record for the follow-up
+          const followUpRecord = new EmailAudit({
+            jobId: `followup_${record.jobId}`,
+            userProfile: userType,
+            name: record.name,
+            company: record.company,
+            email: record.email,
+            role: record.role,
+            link: record.link,
+            status: "success",
+            messageId: newMessageId,
+            threadId: record.threadId,
+            isFollowUp: true,
+            originalMessageId: record.messageId,
+            emailType: 'Follow-up Email'
+          });
+
+          await followUpRecord.save();
+
+          // Update the original record's follow-up count and date
+          await EmailAudit.findByIdAndUpdate(record._id, {
+            $inc: { followUpCount: 1 },
+            $set: { lastFollowUpDate: new Date() }
+          });
+
+          // Update job progress
+          const job = emailJobs.get(email);
+          if (job) {
+            job.current++;
+            job.success++;
+            
+            // Send progress update first
+            sendToClient(email, {
+              type: 'progress',
+              total: job.total,
+              current: job.current,
+              success: job.success,
+              failed: job.failed
+            });
+            
+            // Then send success log
+            sendToClient(email, {
+              type: 'log',
+              message: `${job.current}/${job.total}: Successfully sent follow-up email to ${record.email}`
+            });
+          }
+
+        } catch (error) {
+          console.error('Error sending follow-up:', {
+            error: error.message,
+            stack: error.stack,
+            record: {
+              email: record.email,
+              company: record.company,
+              role: record.role,
+              threadId: record.threadId,
+              messageId: record.messageId
+            }
+          });
+          
+          // Update job progress
+          const job = emailJobs.get(email);
+          if (job) {
+            job.current++;
+            job.failed++;
+            
+            // Send error log first with more details
+            sendToClient(email, {
+              type: 'log',
+              message: `${job.current}/${job.total}: Failed to send follow-up to ${record.email}: ${error.message} (${error.code || 'Unknown error'})`
+            });
+            
+            // Then send progress update
+            sendToClient(email, {
+              type: 'progress',
+              total: job.total,
+              current: job.current,
+              success: job.success,
+              failed: job.failed
+            });
+          }
+        }
+      }
+
+      // Send completion event
+      const job = emailJobs.get(email);
+      if (job) {
+        sendToClient(email, {
+          type: 'complete',
+          success: job.success,
+          failed: job.failed
+        });
+        emailJobs.delete(email);
+      }
+
+    } catch (error) {
+      console.error('Error in bulk follow-up process:', error);
+      sendToClient(email, {
+        type: 'log',
+        message: `❌ Error in bulk follow-up process: ${error.message}`
+      });
+      const job = emailJobs.get(email);
+      if (job) {
+        sendToClient(email, {
+          type: 'complete',
+          success: job.success,
+          failed: job.failed
+        });
+        emailJobs.delete(email);
+      }
+    }
+
+  } catch (error) {
+    console.error('Error sending bulk follow-ups:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error sending bulk follow-ups' 
+    });
+  }
+});
+
 // Process email job
 async function processEmailJob(email) {
   const job = emailJobs.get(email);
@@ -571,7 +1094,11 @@ async function processEmailJob(email) {
           role: row.Role || 'Missing',
           link: row.Link,
           status: "failure",
-          errorDetails: "Missing required fields"   
+          errorDetails: "Missing required fields",
+          messageId: `error-${Date.now()}-${job.jobId}`,
+          threadId: `error-${Date.now()}-${job.jobId}`,
+          isFollowUp: false,
+          emailType: 'Main Email'
         });
         await newJob.save(); 
 
@@ -579,7 +1106,7 @@ async function processEmailJob(email) {
       }
       
       // Send the email
-      await sendEmail(transporter, row, job);
+      const info = await sendEmail(transporter, row, job);
       job.success++;
 
       console.log('✅ Email sent successfully:', {
@@ -587,18 +1114,6 @@ async function processEmailJob(email) {
         recipient: row.Email,
         progress: `${i + 1}/${job.total}`
       });
-
-      const newJob = new EmailAudit({
-        jobId: job.jobId,        
-        userProfile: job.userType,  
-        name: row.Name,    
-        company: row.Company,
-        email: row.Email,
-        role: row.Role,
-        link: row.Link,
-        status: "success"   
-      });
-      await newJob.save(); 
       
       sendToClient(email, {
         type: 'log',
@@ -625,7 +1140,11 @@ async function processEmailJob(email) {
         role: row.Role,
         link: row.Link,
         status: "failure",
-        errorDetails: error.message   
+        errorDetails: error.message,
+        messageId: `error-${Date.now()}-${job.jobId}`,
+        threadId: `error-${Date.now()}-${job.jobId}`,
+        isFollowUp: false,
+        emailType: 'Main Email'
       });
       await newJob.save(); 
 
@@ -659,80 +1178,94 @@ async function processEmailJob(email) {
 
 async function sendEmail(transporter, row, job) {
     try {
-        const {Name, Company, Email, Role, Link} = row;
-
-        console.log('🔄 Processing email for:', {
-            recipient: Email,
-            userType: job.userType
-        });
-
-        const nameParts = Name.split(' ');
-        const firstName = nameParts[0];
-
-        // Determine which email template to use
-        let emailTemplate = await getEmailTemplate(job.userType);
+        const from = nameMap[job.userType] || "Interview Opportunity";
+        const { Name, Email, Role, Company, Link } = row;
         
-        if (!emailTemplate) {
-            throw new Error(`Email template not found for user type: ${job.userType}`);
+        // Fetch the email template for the user type
+        const template = await UserTemplate.findOne({ userProfile: job.userType });
+        if (!template) {
+            throw new Error(`No template found for user type: ${job.userType}`);
         }
-
-        if (job.userType === 'other') {
-            if (!job.customEmailBody) {
-                throw new Error('No custom email template provided');
-            }
-            // ... existing code for custom template ...
-        }
-
-        // Process conditional Link statement properly
-        const linkRegex = /\$\{Link \? `(.*?)` : ''\}/g;
-        emailTemplate = emailTemplate.replace(linkRegex, (match, content) => {
-            return Link ? content : '';
-        });
+        let emailTemplate = template.userTemplate;
         
-        // Replace regular template variables
+        // Process template variables
+        const firstName = Name.split(' ')[0];
         emailTemplate = emailTemplate
             .replace(/\$\{firstName\}/g, firstName)
             .replace(/\$\{Name\}/g, Name)
             .replace(/\$\{Company\}/g, Company)
             .replace(/\$\{Email\}/g, Email)
-            .replace(/\$\{Role\}/g, Role)
-            .replace(/\$\{Link\}/g, Link || '');
+            .replace(/\$\{Role\}/g, Role);
 
-        const nameMap = {
-            navneet: "Navneet Khandelwal",
-            teghdeep: "Teghdeep Kapoor",
-            divyam: "Divyam Shrivastava",
-            dhananjay: "Dhananjay Sharma",
-            akash: "Akash Thakur",
-            avi: "Avi Kapoor",
-            komal: "Komal Shrivastava",
-            pooja: "Pooja Sharma"
-        };
+        // Handle conditional Link statement
+        const linkRegex = /\$\{Link \? `(.*?)` : ''\}/g;
+        emailTemplate = emailTemplate.replace(linkRegex, (match, content) => {
+            return Link ? content.replace(/\$\{Link\}/g, Link) : '';
+        });
+
+        // Replace any remaining ${Link} variables
+        emailTemplate = emailTemplate.replace(/\$\{Link\}/g, Link || '');
         
-        const from = nameMap[job.userType] || "Interview Opportunity Needed";
+        // Generate message ID before creating mail options
+        const domain = job.email.split('@')[1];
+        const messageId = `<${Date.now()}.${job.jobId}@${domain}>`;
         
         const mailOptions = {
             from: `${from} <${job.email}>`,
             to: Email,
             subject: `Request for an Interview Opportunity - ${Role} at ${Company}`,
-            html: emailTemplate
+            html: emailTemplate,
+            messageId: messageId,
+            headers: {
+                'Message-ID': messageId,
+                'X-Entity-Ref-ID': job.jobId,
+                'X-Priority': '1',
+                'X-MSMail-Priority': 'High',
+                'Importance': 'high'
+            }
         };
 
         console.log('📤 Sending email:', {
             from: mailOptions.from,
             to: mailOptions.to,
-            subject: mailOptions.subject
+            subject: mailOptions.subject,
+            messageId: messageId
         });
 
-        return await transporter.sendMail(mailOptions);
+        const info = await transporter.sendMail(mailOptions);
+        
+        // Create audit record with required fields
+        const newJob = new EmailAudit({
+            jobId: job.jobId,        
+            userProfile: job.userType,
+            name: Name,    
+            company: Company,
+            email: Email,
+            role: Role,
+            link: Link,
+            status: "success",
+            messageId: messageId,
+            threadId: messageId,
+            isFollowUp: false,
+            emailType: 'Main Email'
+        });
+
+        await newJob.save();
+        console.log('✅ Email audit record created:', {
+            jobId: job.jobId,
+            messageId: messageId,
+            threadId: messageId
+        });
+
+        return info;
     } catch (error) {
         console.error('❌ Error in sendEmail function:', {
             error: error.message,
             stack: error.stack,
-            recipient: row.Email,
+            recipient: Email,
             userType: job.userType
         });
-        throw error; // Re-throw to be handled by the caller
+        throw error;
     }
 }
 
@@ -771,6 +1304,118 @@ async function getEmailTemplate (userType) {
     throw error; // Throw error for better debugging
   }
 }
+
+// Get follow-up template
+app.get('/api/followup-template/:userType', async (req, res) => {
+  try {
+    const { userType } = req.params;
+    
+    if (!userType) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User type is required' 
+      });
+    }
+
+    const template = await FollowUpTemplate.findOne({ userProfile: userType });
+    
+    res.status(200).json({ 
+      success: true, 
+      template: template?.followUpTemplate || ''
+    });
+  } catch (error) {
+    console.error('Error fetching follow-up template:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error fetching follow-up template' 
+    });
+  }
+});
+
+// Save follow-up template
+app.post('/api/followup-template', async (req, res) => {
+  try {
+    const { userProfile, template } = req.body;
+    
+    if (!userProfile || !template) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User profile and template are required' 
+      });
+    }
+
+    // Update or create template
+    await FollowUpTemplate.findOneAndUpdate(
+      { userProfile },
+      { 
+        userProfile,
+        followUpTemplate: template,
+        lastUpdated: new Date()
+      },
+      { upsert: true }
+    );
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Follow-up template saved successfully' 
+    });
+  } catch (error) {
+    console.error('Error saving follow-up template:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error saving follow-up template' 
+    });
+  }
+});
+
+// Add this endpoint after other endpoints
+app.post('/api/bulk-mark-reply', async (req, res) => {
+  try {
+    const { startDate, endDate, userProfile } = req.body;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Start date and end date are required' 
+      });
+    }
+
+    // Create date objects for comparison
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999); // Set to end of day
+
+    // Build the query
+    const query = {
+      createdAt: { $gte: start, $lte: end },
+      replyReceived: false // Only update emails that haven't been marked as replied
+    };
+
+    // Add userProfile filter if not 'all'
+    if (userProfile !== 'all') {
+      query.userProfile = userProfile;
+    }
+
+    // Update all matching records
+    const result = await EmailAudit.updateMany(
+      query,
+      { $set: { replyReceived: true } }
+    );
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Successfully marked emails as replied',
+      updatedCount: result.modifiedCount
+    });
+
+  } catch (error) {
+    console.error('Error marking bulk replies:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error while marking replies' 
+    });
+  }
+});
 
 // Fallback for all other routes to serve React app
 // app.get('*', (req, res) => {
