@@ -414,6 +414,84 @@ app.get('/api/get-resume-link/:userType', async (req, res) => {
   }
 });
 
+// Add new endpoint to get template
+app.get('/api/get-template/:userType', async (req, res) => {
+  try {
+    const { userType } = req.params;
+    
+    if (!userType) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User type is required' 
+      });
+    }
+
+    // Get the current template
+    const template = await UserTemplate.findOne({ userProfile: userType });
+    
+    if (!template) {
+      console.log(`No template found for userType: ${userType}`);
+      return res.status(404).json({ 
+        success: false, 
+        message: `No template found for user type: ${userType}` 
+      });
+    }
+
+    res.status(200).json({ 
+      success: true, 
+      template: template.userTemplate
+    });
+
+  } catch (error) {
+    console.error('Error fetching template:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error fetching template' 
+    });
+  }
+});
+
+// Add new endpoint to update template
+app.post('/api/update-template', async (req, res) => {
+  try {
+    const { userType, template } = req.body;
+    
+    if (!userType || !template) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User type and template are required' 
+      });
+    }
+
+    // Find or create template
+    let userTemplate = await UserTemplate.findOne({ userProfile: userType });
+    
+    if (!userTemplate) {
+      userTemplate = new UserTemplate({
+        userProfile: userType,
+        userTemplate: template
+      });
+    } else {
+      userTemplate.userTemplate = template;
+    }
+
+    await userTemplate.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Template updated successfully',
+      template: userTemplate.userTemplate
+    });
+
+  } catch (error) {
+    console.error('Error updating template:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Server error updating template' 
+    });
+  }
+});
+
 // Process email job
 async function processEmailJob(email) {
   const job = emailJobs.get(email);
