@@ -97,6 +97,7 @@ async function sendEmail(transporter, row, job) {
 
   // Replace template variables
   let emailContent = template;
+
   const replacements = {
     // Match exact variable names from template
     '${firstName}': row.name || '',
@@ -115,7 +116,6 @@ async function sendEmail(transporter, row, job) {
     '{{link}}': row.link || ''
   };
 
-
   // Apply all replacements
   Object.entries(replacements).forEach(([key, value]) => {
     // Escape special characters in the key for regex
@@ -127,6 +127,15 @@ async function sendEmail(transporter, row, job) {
       console.log(`Replaced ${key} with ${value}`);
     }
   });
+
+  // Handle conditional Link statement
+  const linkRegex = /\$\{Link \? `(.*?)` : ''\}/g;
+  emailContent = emailContent.replace(linkRegex, (match, content) => {
+    return row.link ? content.replace(/\$\{Link\}/g, row.link) : '';
+  });
+
+  // Replace any remaining ${Link} variables
+  emailContent = emailContent.replace(/\$\{Link\}/g, row.link || '');
 
   const mailOptions = {
     from: `"${senderName}" <${email}>`,
@@ -257,8 +266,7 @@ async function processEmailJob(email) {
         // Send error message
         sendToClient(email, {
           type: 'log',
-          message: `Failed to send email to ${row.email}: ${error.message}`
-        });
+          message: `Failed to send email to ${row.email}: ${error.message}`        });
       }
       
       job.current = i + 1;
@@ -299,4 +307,5 @@ module.exports = {
   sendToClient,
   getEmailTemplate,
   normalizeData
-}; 
+};
+
