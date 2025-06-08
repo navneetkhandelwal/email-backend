@@ -3,25 +3,13 @@ const createTransporter = require('../utils/emailTransporter');
 const EmailAudit = require('../models/EmailAudit');
 const UserTemplate = require('../models/UserTemplate');
 const FollowUpTemplate = require('../models/FollowUpTemplate');
+const UserProfile = require('../models/UserProfile');
 
 // Store active SSE connections
 const clients = new Map();
 
 // Email sending queue and process management
 const emailJobs = new Map();
-
-// Name mapping for email senders
-const nameMap = {
-  'navneet': 'Navneet Khandelwal',
-  'teghdeep': 'Teghdeep Kapoor',
-  'divyam': 'Divyam Shrivastava',
-  'dhananjay': 'Dhananjay Sharma',
-  'akash': 'Akash Rana',
-  'avi': 'Avi Kapoor',
-  'komal': 'Komal Shrivastava',
-  'pooja': 'Pooja Sharma',
-  'other': 'Interview Opportunity'
-};
 
 // Function to normalize data fields
 function normalizeData(data) {
@@ -34,39 +22,67 @@ function normalizeData(data) {
   }));
 }
 
-async function getEmailTemplate(userType) {
+async function getEmailTemplate(userType, isFollowUp = false) {
   try {
-    const template = await UserTemplate.findOne({ userProfile: userType });
+    // First check if the user profile exists
+    const userProfile = await UserProfile.findOne({ name: userType.toLowerCase() });
+    if (!userProfile) {
+      console.error(`No user profile found for userType: ${userType}`);
+      throw new Error(`No user profile found for: ${userType}`);
+    }
+
+    // Check for template in user profile
+    if (isFollowUp) {
+      if (userProfile.followUpTemplate) {
+        console.log('Found follow-up template in user profile:', {
+          userType,
+          templateLength: userProfile.followUpTemplate.length
+        });
+        return userProfile.followUpTemplate;
+      }
+    } else {
+      if (userProfile.emailTemplate) {
+        console.log('Found email template in user profile:', {
+          userType,
+          templateLength: userProfile.emailTemplate.length
+        });
+        return userProfile.emailTemplate;
+      }
+    }
+
+    // If no template in user profile, try the old template system
+    const template = isFollowUp 
+      ? await FollowUpTemplate.findOne({ userProfile: userType.toLowerCase() })
+      : await UserTemplate.findOne({ userProfile: userType.toLowerCase() });
+
     if (!template) {
       console.error(`No template found for userType: ${userType}`);
-      return null;
+      throw new Error(`No template found for user type: ${userType}`);
     }
-    console.log('Found template:', {
+
+    const templateContent = isFollowUp ? template.followUpTemplate : template.userTemplate;
+    console.log('Found template in old system:', {
       userType,
-      template: template.userTemplate,
-      length: template.userTemplate.length,
-      containsDollarSign: template.userTemplate.includes('${'),
-      containsDoubleCurly: template.userTemplate.includes('{{'),
-      hasFirstName: template.userTemplate.includes('${firstName}'),
-      hasRole: template.userTemplate.includes('${Role}'),
-      hasCompany: template.userTemplate.includes('${Company}')
+      templateLength: templateContent.length
     });
-    return template.userTemplate;
+    return templateContent;
+
   } catch (error) {
     console.error('Error fetching email template:', error);
-    return null;
+    throw error;
   }
 }
 
 async function sendEmail(transporter, row, job) {
-  const { email, password, userType, customEmailBody } = job;
+  const { email, password, userType, customEmailBody, isFollowUp } = job;
   console.log('Starting sendEmail with:', {
     userType,
     row,
-    hasCustomBody: !!customEmailBody
+    hasCustomBody: !!customEmailBody,
+    isFollowUp
   });
 
-  const template = customEmailBody || await getEmailTemplate(userType);
+  const template = customEmailBody || await getEmailTemplate(userType, isFollowUp);
   
   if (!template) {
     throw new Error('No email template found');
@@ -74,7 +90,10 @@ async function sendEmail(transporter, row, job) {
 
   const messageId = uuidv4();
   const threadId = uuidv4();
-  const senderName = nameMap[userType] || nameMap.other;
+
+  // Get the display name from the user profile
+  const userProfile = await UserProfile.findOne({ name: userType.toLowerCase() });
+  const senderName = userProfile?.displayName || 'Interview Opportunity';
 
   // Replace template variables
   let emailContent = template;
@@ -96,22 +115,8 @@ async function sendEmail(transporter, row, job) {
     '{{link}}': row.link || ''
   };
 
-  console.log('Template before replacement:', {
-    content: emailContent,
-    containsDollarSign: emailContent.includes('${'),
-    containsDoubleCurly: emailContent.includes('{{'),
-    hasFirstName: emailContent.includes('${firstName}'),
-    hasRole: emailContent.includes('${Role}'),
-    hasCompany: emailContent.includes('${Company}'),
-    variables: {
-      name: row.name,
-      company: row.company,
-      role: row.role,
-      link: row.link
-    }
-  });
 
-  // Replace all variables
+  // Apply all replacements
   Object.entries(replacements).forEach(([key, value]) => {
     // Escape special characters in the key for regex
     const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -123,61 +128,61 @@ async function sendEmail(transporter, row, job) {
     }
   });
 
-  console.log('Template after replacement:', {
-    content: emailContent,
-    containsDollarSign: emailContent.includes('${'),
-    containsDoubleCurly: emailContent.includes('{{'),
-    hasFirstName: emailContent.includes('${firstName}'),
-    hasRole: emailContent.includes('${Role}'),
-    hasCompany: emailContent.includes('${Company}')
-  });
-
   const mailOptions = {
     from: `"${senderName}" <${email}>`,
     to: row.email,
     subject: `Interview Opportunity at ${row.company}`,
     html: emailContent,
+    messageId: messageId,
     headers: {
-      'Message-ID': messageId,
-      'Thread-ID': threadId
+      'In-Reply-To': threadId,
+      'References': threadId
     }
   };
 
   try {
-    console.log('Sending email to:', row.email);
     const info = await transporter.sendMail(mailOptions);
     console.log('Email sent successfully:', info.messageId);
-    
-    await EmailAudit.create({
+
+    // Create audit entry
+    const audit = new EmailAudit({
       jobId: job.jobId,
-      userProfile: userType,
+      userProfile: userType.toLowerCase(),
       name: row.name,
       company: row.company,
       email: row.email,
       role: row.role,
       link: row.link,
+      messageId: messageId,
+      threadId: threadId,
       status: 'success',
-      messageId,
-      threadId,
-      emailType: 'initial'
+      isFollowUp: isFollowUp,
+      emailType: isFollowUp ? 'Follow-up Email' : 'Main Email'
     });
+    await audit.save();
+
     return info;
   } catch (error) {
     console.error('Error sending email:', error);
-    await EmailAudit.create({
+    
+    // Create audit entry for failed email
+    const audit = new EmailAudit({
       jobId: job.jobId,
-      userProfile: userType,
+      userProfile: userType.toLowerCase(),
       name: row.name,
       company: row.company,
       email: row.email,
       role: row.role,
       link: row.link,
+      messageId: messageId,
+      threadId: threadId,
       status: 'failed',
       errorDetails: error.message,
-      messageId,
-      threadId,
-      emailType: 'initial'
+      isFollowUp: isFollowUp,
+      emailType: isFollowUp ? 'Follow-up Email' : 'Main Email'
     });
+    await audit.save();
+
     throw error;
   }
 }
@@ -291,5 +296,7 @@ module.exports = {
   emailJobs,
   clients,
   processEmailJob,
-  sendToClient
+  sendToClient,
+  getEmailTemplate,
+  normalizeData
 }; 

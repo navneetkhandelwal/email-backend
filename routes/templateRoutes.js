@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const UserTemplate = require('../models/UserTemplate');
 const FollowUpTemplate = require('../models/FollowUpTemplate');
+const UserProfile = require('../models/UserProfile');
 
 // Get template
 router.get('/get-template/:userType', async (req, res) => {
@@ -15,7 +16,25 @@ router.get('/get-template/:userType', async (req, res) => {
       });
     }
 
-    const template = await UserTemplate.findOne({ userProfile: userType });
+    // First check if the user profile exists
+    const userProfile = await UserProfile.findOne({ name: userType.toLowerCase() });
+    if (!userProfile) {
+      return res.status(404).json({ 
+        success: false, 
+        message: `No user profile found for: ${userType}` 
+      });
+    }
+
+    // Use the template from the user profile if available
+    if (userProfile.emailTemplate) {
+      return res.status(200).json({ 
+        success: true, 
+        template: userProfile.emailTemplate
+      });
+    }
+
+    // Fallback to the old template system
+    const template = await UserTemplate.findOne({ userProfile: userType.toLowerCase() });
     
     if (!template) {
       console.log(`No template found for userType: ${userType}`);
@@ -51,23 +70,35 @@ router.post('/update-template', async (req, res) => {
       });
     }
 
-    let userTemplate = await UserTemplate.findOne({ userProfile: userType });
-    
+    // First check if the user profile exists
+    const userProfile = await UserProfile.findOne({ name: userType.toLowerCase() });
+    if (!userProfile) {
+      return res.status(404).json({ 
+        success: false, 
+        message: `No user profile found for: ${userType}` 
+      });
+    }
+
+    // Update the user profile's email template
+    userProfile.emailTemplate = template;
+    await userProfile.save();
+
+    // Also update the old template system for backward compatibility
+    let userTemplate = await UserTemplate.findOne({ userProfile: userType.toLowerCase() });
     if (!userTemplate) {
       userTemplate = new UserTemplate({
-        userProfile: userType,
+        userProfile: userType.toLowerCase(),
         userTemplate: template
       });
     } else {
       userTemplate.userTemplate = template;
     }
-
     await userTemplate.save();
 
     res.status(200).json({ 
       success: true, 
       message: 'Template updated successfully',
-      template: userTemplate.userTemplate
+      template: template
     });
 
   } catch (error) {
@@ -91,7 +122,7 @@ router.get('/get-followup-template/:userType', async (req, res) => {
       });
     }
 
-    const template = await FollowUpTemplate.findOne({ userProfile: userType });
+    const template = await FollowUpTemplate.findOne({ userProfile: userType.toLowerCase() });
     
     res.status(200).json({ 
       success: true, 
@@ -119,11 +150,11 @@ router.post('/update-followup-template', async (req, res) => {
       });
     }
 
-    let followUpTemplate = await FollowUpTemplate.findOne({ userProfile: userType });
+    let followUpTemplate = await FollowUpTemplate.findOne({ userProfile: userType.toLowerCase() });
     
     if (!followUpTemplate) {
       followUpTemplate = new FollowUpTemplate({
-        userProfile: userType,
+        userProfile: userType.toLowerCase(),
         followUpTemplate: template
       });
     } else {
@@ -159,8 +190,21 @@ router.post('/update-resume-link', async (req, res) => {
       });
     }
 
-    const template = await UserTemplate.findOne({ userProfile: userType });
-    
+    // First check if the user profile exists
+    const userProfile = await UserProfile.findOne({ name: userType.toLowerCase() });
+    if (!userProfile) {
+      return res.status(404).json({ 
+        success: false, 
+        message: `No user profile found for: ${userType}` 
+      });
+    }
+
+    // Update the user profile's resume link
+    userProfile.resumeLink = resumeLink;
+    await userProfile.save();
+
+    // Also update the old template system for backward compatibility
+    const template = await UserTemplate.findOne({ userProfile: userType.toLowerCase() });
     if (!template) {
       return res.status(404).json({ 
         success: false, 
@@ -220,7 +264,17 @@ router.get('/get-resume-link/:userType', async (req, res) => {
       });
     }
 
-    const template = await UserTemplate.findOne({ userProfile: userType });
+    // First check if the user profile exists
+    const userProfile = await UserProfile.findOne({ name: userType.toLowerCase() });
+    if (userProfile && userProfile.resumeLink) {
+      return res.status(200).json({ 
+        success: true, 
+        resumeLink: userProfile.resumeLink
+      });
+    }
+
+    // Fallback to the old template system
+    const template = await UserTemplate.findOne({ userProfile: userType.toLowerCase() });
     
     if (!template) {
       console.log(`No template found for userType: ${userType}`);
@@ -266,7 +320,7 @@ router.get('/followup-template/:userType', async (req, res) => {
         message: 'User type is required' 
       });
     }
-    const template = await FollowUpTemplate.findOne({ userProfile: userType });
+    const template = await FollowUpTemplate.findOne({ userProfile: userType.toLowerCase() });
     res.status(200).json({ 
       success: true, 
       template: template ? template.followUpTemplate : null
