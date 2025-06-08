@@ -192,23 +192,43 @@ router.post('/send-followup', async (req, res) => {
 
     const transporter = createTransporter(email, password);
     
-    // Generate a new Message-ID for the follow-up that references the original
+    // Generate a new Message-ID for the follow-up - match bulk format exactly
     const domain = email.split('@')[1];
-    const newMessageId = `<followup.${Date.now()}.${record.jobId}@${domain}>`;
+    const newMessageId = `<followup-bulk.${Date.now()}.${record.jobId}@${domain}>`;
 
+    // Replace template variables
+    let emailContent = template;
+    const data = {
+      name: record.name,
+      company: record.company,
+      role: record.role,
+      link: record.link
+    };
+    emailContent = replaceTemplateVariables(emailContent, data);
+
+    // Handle conditional Link statement
+    const linkRegex = /\$\{Link \? `(.*?)` : ''\}/g;
+    emailContent = emailContent.replace(linkRegex, (match, content) => {
+      return record.link ? content.replace(/\$\{Link\}/g, record.link) : '';
+    });
+
+    // Replace any remaining ${Link} variables
+    emailContent = emailContent.replace(/\$\{Link\}/g, record.link || '');
+
+    // Create the email options with proper threading headers - match bulk exactly
     const mailOptions = {
       from: `${userProfile.displayName} <${email}>`,
       to: record.email,
       subject: `Re: Request for an Interview Opportunity - ${record.role} at ${record.company}`,
-      html: template.followUpTemplate,
-      inReplyTo: record.messageId,
-      references: record.threadId,
+      html: emailContent,
       messageId: newMessageId,
+      inReplyTo: record.messageId,
+      references: record.messageId,
       headers: {
         'Message-ID': newMessageId,
         'In-Reply-To': record.messageId,
-        'References': record.threadId,
-        'X-Entity-Ref-ID': recordId,
+        'References': record.messageId,
+        'X-Entity-Ref-ID': record._id,
         'X-Follow-Up': 'true',
         'Thread-Topic': `Interview Opportunity - ${record.role} at ${record.company}`,
         'Thread-Index': `${record.jobId}-${Date.now()}`,
@@ -220,7 +240,7 @@ router.post('/send-followup', async (req, res) => {
 
     const info = await transporter.sendMail(mailOptions);
 
-    // Create a new audit record for the follow-up
+    // Create a new audit record for the follow-up - match bulk exactly
     const followUpRecord = new EmailAudit({
       jobId: `followup_${record.jobId}`,
       userProfile: userType,
@@ -229,12 +249,13 @@ router.post('/send-followup', async (req, res) => {
       email: record.email,
       role: record.role,
       link: record.link,
-      status: 'success',
+      status: "success",
       messageId: newMessageId,
-      threadId: record.threadId,
+      threadId: record.messageId,
       isFollowUp: true,
       originalMessageId: record.messageId,
-      emailType: 'Follow-up Email'
+      emailType: 'Follow-up Email',
+      emailContent: emailContent
     });
 
     await followUpRecord.save();
@@ -292,7 +313,6 @@ router.post('/send-bulk-followup', async (req, res) => {
       replyReceived: false,
       emailType: { $ne: 'Follow-up Email' },
       createdAt: { $gte: start, $lte: end },
-      threadId: { $exists: true },
       messageId: { $exists: true }
     });
 
@@ -332,13 +352,6 @@ router.post('/send-bulk-followup', async (req, res) => {
     // Create transporter first to validate credentials
     const transporter = createTransporter(email, password);
     
-    // Log transporter creation
-    console.log('Created transporter for:', {
-      email,
-      userType,
-      recordCount: records.length
-    });
-
     // Return success response immediately to start background processing
     res.status(200).json({ 
       success: true, 
@@ -348,7 +361,7 @@ router.post('/send-bulk-followup', async (req, res) => {
 
     // Process records in the background
     try {
-      const template = await FollowUpTemplate.findOne({ userProfile: userType });
+      const template = userProfile.followUpTemplate;
       if (!template) {
         if (client) {
           client.write(`data: ${JSON.stringify({
@@ -359,37 +372,51 @@ router.post('/send-bulk-followup', async (req, res) => {
         return;
       }
 
-      console.log('Starting bulk follow-up with template:', {
-        userType,
-        templateExists: !!template,
-        recordCount: records.length
-      });
-
       for (const record of records) {
         try {
           console.log('Processing record:', {
             email: record.email,
             company: record.company,
             role: record.role,
-            threadId: record.threadId,
             messageId: record.messageId
           });
+
+          // Replace template variables
+          let emailContent = template;
+          const data = {
+            name: record.name,
+            company: record.company,
+            role: record.role,
+            link: record.link
+          };
+          emailContent = replaceTemplateVariables(emailContent, data);
+
+          // Handle conditional Link statement
+          const linkRegex = /\$\{Link \? `(.*?)` : ''\}/g;
+          emailContent = emailContent.replace(linkRegex, (match, content) => {
+            return record.link ? content.replace(/\$\{Link\}/g, record.link) : '';
+          });
+
+          // Replace any remaining ${Link} variables
+          emailContent = emailContent.replace(/\$\{Link\}/g, record.link || '');
+
           // Generate a new Message-ID for the follow-up
           const domain = email.split('@')[1];
           const newMessageId = `<followup-bulk.${Date.now()}.${record.jobId}@${domain}>`;
 
+          // Create the email options with proper threading headers
           const mailOptions = {
             from: `${userProfile.displayName} <${email}>`,
             to: record.email,
             subject: `Re: Request for an Interview Opportunity - ${record.role} at ${record.company}`,
-            html: template.followUpTemplate,
-            inReplyTo: record.messageId,
-            references: record.threadId,
+            html: emailContent,
             messageId: newMessageId,
+            inReplyTo: record.messageId,
+            references: record.messageId,
             headers: {
               'Message-ID': newMessageId,
               'In-Reply-To': record.messageId,
-              'References': record.threadId,
+              'References': record.messageId,
               'X-Entity-Ref-ID': record._id,
               'X-Follow-Up': 'true',
               'Thread-Topic': `Interview Opportunity - ${record.role} at ${record.company}`,
@@ -413,10 +440,11 @@ router.post('/send-bulk-followup', async (req, res) => {
             link: record.link,
             status: "success",
             messageId: newMessageId,
-            threadId: record.threadId,
+            threadId: record.messageId,  // Use the original message ID as thread ID
             isFollowUp: true,
             originalMessageId: record.messageId,
-            emailType: 'Follow-up Email'
+            emailType: 'Follow-up Email',
+            emailContent: emailContent
           });
 
           await followUpRecord.save();
@@ -459,7 +487,6 @@ router.post('/send-bulk-followup', async (req, res) => {
               email: record.email,
               company: record.company,
               role: record.role,
-              threadId: record.threadId,
               messageId: record.messageId
             }
           });
@@ -570,6 +597,15 @@ router.post('/resend-email', async (req, res) => {
       link: originalRecord.link
     };
     emailContent = replaceTemplateVariables(emailContent, data);
+
+    // Handle conditional Link statement
+    const linkRegex = /\$\{Link \? `(.*?)` : ''\}/g;
+    emailContent = emailContent.replace(linkRegex, (match, content) => {
+      return originalRecord.link ? content.replace(/\$\{Link\}/g, originalRecord.link) : '';
+    });
+
+    // Replace any remaining ${Link} variables
+    emailContent = emailContent.replace(/\$\{Link\}/g, originalRecord.link || '');
 
     // Create email transporter
     const transporter = createTransporter(email, password);

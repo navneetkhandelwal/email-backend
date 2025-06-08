@@ -89,7 +89,6 @@ async function sendEmail(transporter, row, job) {
   }
 
   const messageId = uuidv4();
-  const threadId = uuidv4();
 
   // Get the display name from the user profile
   const userProfile = await UserProfile.findOne({ name: userType.toLowerCase() });
@@ -140,12 +139,15 @@ async function sendEmail(transporter, row, job) {
   const mailOptions = {
     from: `"${senderName}" <${email}>`,
     to: row.email,
-    subject: `Interview Opportunity at ${row.company}`,
+    subject: `Request for an Interview Opportunity - ${row.role} at ${row.company}`,
     html: emailContent,
     messageId: messageId,
     headers: {
-      'In-Reply-To': threadId,
-      'References': threadId
+        'Message-ID': messageId,
+        'X-Entity-Ref-ID': job.jobId,
+        'X-Priority': '1',
+        'X-MSMail-Priority': 'High',
+        'Importance': 'high'
     }
   };
 
@@ -163,7 +165,7 @@ async function sendEmail(transporter, row, job) {
       role: row.role,
       link: row.link,
       messageId: messageId,
-      threadId: threadId,
+      threadId: messageId,
       status: 'success',
       isFollowUp: isFollowUp,
       emailType: isFollowUp ? 'Follow-up Email' : 'Main Email'
