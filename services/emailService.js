@@ -135,7 +135,7 @@ async function sendEmail(transporter, row, job) {
 
   // Replace any remaining ${Link} variables
   emailContent = emailContent.replace(/\$\{Link\}/g, row.link || '');
-  const subjectLine = userType.toLowerCase() === 'shweta'
+  const subjectLine = userType.toLowerCase() === 'shweta khandelwal'
   ? `Job Opportunity - ${row.role} at ${row.company}`
   : `Request for an Interview Opportunity - ${row.role} at ${row.company}`;
 
